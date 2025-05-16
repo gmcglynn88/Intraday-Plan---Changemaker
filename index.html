@@ -1,8 +1,15 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>…same header + style.css…<title>Intraday Weekly Plan</title></head>
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="style.css">
+  <title>Intraday Weekly Plan</title>
+</head>
 <body>
-  …same header/logo…
+  <!-- …same header/logo… -->
+
   <main class="content-area">
     <div class="app-window" style="max-width:none">
       <div class="form-section">
@@ -49,7 +56,10 @@
           <div class="form-group">
             <label for="numberPrecision">Number Precision:</label>
             <select id="numberPrecision">
-              <option>0</option><option selected>1</option><option>2</option><option>3</option>
+              <option>0</option>
+              <option selected>1</option>
+              <option>2</option>
+              <option>3</option>
             </select>
           </div>
         </div>
@@ -73,8 +83,166 @@
       </div>
     </div>
   </main>
+
   <script>
-    // …only the Intraday Plan JS …
+    // === Config & State ===
+    const accessToken = 'YOUR_ACCESS_TOKEN';
+    const REGION = 'YOUR_REGION';               // e.g. us-east-1
+    const AUTH_URL = 'YOUR_AUTH_URL';
+    const intradayConfig = { timeFormat: 'seconds', precision: 1 };
+    const intradayState = { weekData: [], planningGroupName: '', businessUnits: {} };
+
+    // =======================
+    // Intraday Weekly Plan Functions
+    async function initIntradayPlan() {
+      if (!accessToken) { window.location.href = AUTH_URL; return; }
+      await initializeIntradayPlan();
+    }
+
+    async function initializeIntradayPlan() {
+      const authMsg = document.getElementById('intradayAuthMessage');
+      authMsg.textContent = 'Authenticated successfully!';
+      authMsg.className = 'status-message success';
+      setTimeout(() => { authMsg.style.display = 'none'; }, 2000);
+
+      // Event listeners
+      document.getElementById('businessUnitSelect').addEventListener('change', onBusinessUnitChange);
+      document.getElementById('planningGroup').addEventListener('change', onPlanningGroupChange);
+      document.getElementById('weekSelect').addEventListener('change', onWeekSelectChange);
+      document.getElementById('mediaType').addEventListener('change', renderDailyTable);
+      document.getElementById('dailyTabButton').addEventListener('click', () => setActiveTab('daily'));
+      document.getElementById('intervalTabButton').addEventListener('click', () => setActiveTab('interval'));
+      document.getElementById('timeFormat').addEventListener('change', updateTimeFormat);
+      document.getElementById('numberPrecision').addEventListener('change', updateNumberPrecision);
+      document.getElementById('refreshIntradayData').addEventListener('click', refreshIntradayData);
+
+      // Load initial data
+      await fetchBusinessUnits();
+      populateWeekSelect();
+    }
+
+    function updateTimeFormat() {
+      intradayConfig.timeFormat = this.value;
+      renderAllData();
+    }
+
+    function updateNumberPrecision() {
+      intradayConfig.precision = parseInt(this.value, 10);
+      renderAllData();
+    }
+
+    function refreshIntradayData() {
+      const week = document.getElementById('weekSelect').value;
+      if (week) fetchDataForWeek(week);
+    }
+
+    function onBusinessUnitChange() {
+      const bu = this.value;
+      const pg = document.getElementById('planningGroup');
+      pg.disabled = true;
+      pg.innerHTML = '<option>– Loading planning groups –</option>';
+
+      const week = document.getElementById('weekSelect').value;
+      if (bu && week) fetchPlanningGroups(bu, week);
+    }
+
+    function onPlanningGroupChange() {
+      intradayState.planningGroupName = this.selectedOptions[0].text;
+      document.getElementById('weekSelect').disabled = !this.value;
+    }
+
+    function onWeekSelectChange() {
+      const week = this.value;
+      document.getElementById('planningGroup').disabled = !week;
+      document.getElementById('weeklySummary').className = 'loading';
+      document.getElementById('weeklySummary').textContent = 'Loading data…';
+
+      const bu = document.getElementById('businessUnitSelect').value;
+      if (bu && week) fetchPlanningGroups(bu, week);
+    }
+
+    function setActiveTab(tab) {
+      ['daily','interval'].forEach(t => {
+        document.getElementById(`${t}Tab`).classList.toggle('active', t===tab);
+        document.getElementById(`${t}TabButton`).classList.toggle('active', t===tab);
+      });
+    }
+
+    // … formatTime, formatHours, formatNumber, getDayOfWeek, getUKFormattedDate, getWeekDates (unchanged) …
+
+    async function fetchBusinessUnits() {
+      const res = await fetch(`https://api.${REGION}/api/v2/workforcemanagement/businessunits`, {
+        headers: { 'Authorization': `Bearer ${accessToken}` }
+      });
+      const { entities } = await res.json();
+      const sel = document.getElementById('businessUnitSelect');
+      sel.innerHTML = '<option value="">– Select Business Unit –</option>';
+      entities.forEach(bu => {
+        intradayState.businessUnits[bu.id] = bu.timeZone;
+        sel.add(new Option(bu.name, bu.id));
+      });
+      sel.disabled = false;
+    }
+
+    async function fetchPlanningGroups(buId, dateISO) {
+      const res = await fetch(
+        `https://api.${REGION}/api/v2/workforcemanagement/businessunits/${buId}/intraday/planninggroups?date=${dateISO}`, {
+          headers: { 'Authorization': `Bearer ${accessToken}` }
+        }
+      );
+      const { entities } = await res.json();
+      const sel = document.getElementById('planningGroup');
+      sel.innerHTML = '<option value="">– Select Planning Group –</option>';
+      entities.forEach(pg => sel.add(new Option(pg.name, pg.id)));
+      sel.disabled = false;
+
+      if (document.getElementById('weekSelect').value) {
+        fetchDataForWeek(dateISO);
+      }
+    }
+
+    async function fetchIntradayData(date, planningGroupIds) {
+      const buId = document.getElementById('businessUnitSelect').value;
+      const tz   = intradayState.businessUnits[buId] || 'UTC';
+      const body = {
+        businessUnitDate: date,
+        timeZone: tz,
+        managementUnitId: null,
+        planningGroupIds,
+        categories: ["ForecastData","ScheduleData","PerformancePredictionData"],
+        intervalLengthMinutes: 15
+      };
+
+      const res = await fetch(`https://api.${REGION}/api/v2/workforcemanagement/businessunits/${buId}/intraday`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(body)
+      });
+
+      if (!res.ok && res.status === 404) {
+        return { date, data: null, error: 'No data for this date' };
+      }
+      const data = await res.json();
+      return { date, data };
+    }
+
+    async function fetchDataForWeek(startDate) {
+      const pgId = document.getElementById('planningGroup').value || null;
+      const weekDates = getWeekDates(startDate);
+      const promises = weekDates.map(d =>
+        fetchIntradayData(d.raw, pgId ? [pgId] : null).then(r => ({ ...r, uk: d.uk }))
+      );
+      intradayState.weekData = await Promise.all(promises);
+      renderAllData();
+    }
+
+    // … renderDailyTable, render15MinTable, show15MinDetails (unchanged) …
+
+    // Kick it off
+    initIntradayPlan();
   </script>
 </body>
 </html>
